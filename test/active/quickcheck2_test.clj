@@ -1,9 +1,12 @@
 (ns active.quickcheck2-test
   (:require [clojure.test :refer :all]
-            [active.quickcheck2.random :as random]
-            [active.quickcheck2.tree :as tree]
-            [active.quickcheck2.generator-applicative :refer [integrated]]
             [active.clojure.monad :as monad]
+            [active.quickcheck2.generator :as generator]
+            [active.quickcheck2.generator-applicative :refer [integrated]]
+            [active.quickcheck2.tree :as tree]
+            [active.quickcheck2.random :as random]
+            [active.quickcheck2.generator :refer [generate]]
+            [active.quickcheck2.arbitrary :refer [arbitrary-integer arbitrary-natural coerce->generator]]
             [clojure.math.numeric-tower :refer [expt]])
   (:use active.quickcheck2))
 ;; --- shrink tree tests -----
@@ -12,95 +15,13 @@
 
 (defn test-generate [m] (generate 5 test-gen m 20))
 
-(deftest choose-int-works
-  (testing "choose-int produces tree of ints"
-    (is (tree/approx-valid-tree? 5 (test-generate choose-int)))
-    (is (every? int? (take 100 (tree/to-list (test-generate choose-int)))))))
+(defn is-counterexample
+  [mresult]
+  (not (check-result-ok (generate mresult))))
 
-(deftest choose-byte-works
-  (testing "choose-byte produces tree of byte"
-    (is (tree/approx-valid-tree? 5 (test-generate choose-byte)))))
-
-(deftest choose-ascii-char-works
-  (testing "choose-ascii-char produces tree of chars"
-    (is (tree/approx-valid-tree? 5 (test-generate choose-ascii-char)))
-    (is (every? char? (take 100 (tree/to-list (test-generate choose-ascii-char)))))))
-
-(deftest choose-non-numeric-char-works
-  (testing "choose-non-numeric-char produces tree of chars"
-    (is (tree/approx-valid-tree? 5 (test-generate choose-non-numeric-char)))
-    (is (every? char? (take 100 (tree/to-list (test-generate choose-non-numeric-char)))))))
-
-(deftest choose-char-works
-  (testing "choose-char produces tree of chars"
-    (is (tree/approx-valid-tree? 5 (test-generate (choose-char 10 24))))
-    (is (every? char? (take 100 (tree/to-list (test-generate (choose-char 0 20))))))))
-
-(deftest choose-list-works
-  (testing "choose-list produce tree of lists"
-    (is (tree/approx-valid-tree? 5 (test-generate (choose-list choose-int 0))))
-    (is (every? coll? (take 100 (tree/to-list (test-generate (choose-list choose-int 2))))))
-    (is (every? (partial every? int?) (take 100 (tree/to-list (test-generate (choose-list choose-int 2))))))
-    (is (tree/approx-valid-tree? 5 (test-generate (choose-list choose-int 4))))
-    (is (every? coll? (take 100 (tree/to-list (test-generate (choose-list choose-int 3))))))))
-
-(deftest choose-one-of-works
-  (testing "choose-one-of produces tree of given stuff"
-    (is (tree/approx-valid-tree? 5 (test-generate (choose-one-of (seq "abc")))))
-    (is (every? char? (take 100 (tree/to-list
-                                 (test-generate (choose-one-of (seq "abc")))))))))
-
-(nth (list (choose-char 0 1)) 0)
-
-(deftest choose-mixed-works
-  (testing "choose-mixed produces produces tree of mixed"
-    (is (tree/approx-valid-tree? 5 (test-generate
-                                     (choose-mixed (list choose-non-numeric-char
-                                                         (choose-char 0 1))))))
-    (is (every? char? (take 100 (tree/to-list
-                                 (test-generate
-                                   (choose-mixed (list choose-non-numeric-char
-                                                        (choose-char 0 1))))))))))
-
-(deftest choose-symbol-works
-  (testing "choose-symbol produces tree of symbols"
-    (is (tree/approx-valid-tree? 5 (test-generate (choose-symbol 2))))
-    (is (every? symbol? (take 100 (tree/to-list (test-generate (choose-symbol 2))))))))
-
-(deftest arbitrary-sequence-like-works
-  (testing "arbitrary-sequ-like produces tree of sequence"
-    (is (tree/approx-valid-tree? 5 (test-generate
-                                    (arbitrary-generator
-                                     (arbitrary-sequence-like list
-                                                              choose-int)))))
-    (is (every? list? (take 100 (tree/to-list
-                                 (test-generate
-                                  (arbitrary-generator
-                                   (arbitrary-sequence-like list
-                                                            choose-int)))))))
-    (is (tree/approx-valid-tree? 5 (test-generate
-                                    (arbitrary-generator
-                                     (arbitrary-sequence-like vec
-                                                              choose-int)))))
-    (is (every? vector? (take 100 (tree/to-list
-                                   (test-generate
-                                    (arbitrary-generator
-                                     (arbitrary-sequence-like vec
-                                                              choose-int)))))))))
-
-(deftest arbitrary-list-works
-  (testing "arbitrary-sequ-like produces tree of sequence"
-    (is (tree/approx-valid-tree? 5 (test-generate
-                                    (arbitrary-generator
-                                     (arbitrary-list choose-int)))))
-    (is (every? list? (take 100 (tree/to-list
-                                 (test-generate
-                                  (arbitrary-generator
-                                   (arbitrary-list choose-int)))))))
-    (is (every? (partial every? int?) (take 100 (tree/to-list
-                                                 (test-generate
-                                                  (arbitrary-generator
-                                                   (arbitrary-list choose-int)))))))))
+(defn get-counterexample
+  [mresult]
+  (map second (check-result-arguments-list (generate mresult))))
 
 (def t-0 (tree/lazy-tree [0] []))
 (def t-12 (tree/lazy-tree [12] []))
@@ -275,7 +196,7 @@
 (deftest such-that-maybe-lazy
   (testing "tree outcome on big tree from such-that-maybe is fast"
     (let [bignum 9999999999999999999]
-      (tree/tree-outcome (test-generate (such-that-maybe (choose-integer 0 bignum) odd?))))))
+      (tree/tree-outcome (test-generate (generator/such-that-maybe (generator/choose-integer 0 bignum) odd?))))))
 
 (deftest huge-integer
   (testing "trivial property"
@@ -304,7 +225,7 @@
   (testing "whether resize works"
     (is
      (quickcheck
-      (property [x ~(resize 100 (coerce->generator arbitrary-natural))]
+      (property [x ~(generator/resize 100 (coerce->generator arbitrary-natural))]
                 (and (integer? x)
                      (>= x 0)
                      (<= x 100)))))))
@@ -540,7 +461,7 @@
     (is
      (quickcheck
       (property [proc (boolean -> integer)]
-                (function-memorize? proc))))
+                (generator/function-memorize? proc))))
     (is
      (quickcheck
       (property [proc (boolean -> integer)]
@@ -551,7 +472,7 @@
     (is
      (quickcheck
       (property [proc (integer -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc 17))))))))
 
 (deftest natural-function
@@ -559,7 +480,7 @@
     (is
      (quickcheck
       (property [proc (integer -> natural)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (and (integer? (proc 17)))))))))
 
 
@@ -569,7 +490,7 @@
     (is
      (quickcheck
       (property [proc (rational -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc 2/3))))))))
 
 (deftest real-function
@@ -577,7 +498,7 @@
     (is
       (quickcheck
        (property [proc (float -> integer)]
-                 (and (function-memorize? proc)
+                 (and (generator/function-memorize? proc)
                       (integer? (proc 17.5))))))))
 
 (deftest char-function
@@ -585,7 +506,7 @@
     (is
      (quickcheck
       (property [proc (char -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc \a))))))))
 
 (deftest ascii-char-function
@@ -593,7 +514,7 @@
     (is
      (quickcheck
       (property [proc (ascii-char -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc \a))))))))
      
 (deftest string-function
@@ -601,7 +522,7 @@
     (is
      (quickcheck
       (property [proc (string -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc "foo"))))))))
 
 (deftest ascii-string-function
@@ -609,7 +530,7 @@
     (is
      (quickcheck
       (property [proc (ascii-string -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc "foo"))))))))
 
 (deftest symbol-function
@@ -617,7 +538,7 @@
     (is
      (quickcheck
       (property [proc (symbol -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc 'foo))))))))
 
 (deftest mixed-function
@@ -627,7 +548,7 @@
       (property [proc ((mixed integer? integer
                               string?  string)
                        -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc 15))
                      (integer? (proc "foo"))))))))
 
@@ -636,7 +557,7 @@
     (is
      (quickcheck
       (property [proc ((one-of = "foo" "bar" "baz") -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc "foo"))))))))
 
 (deftest vector-function
@@ -644,7 +565,7 @@
     (is
      (quickcheck
       (property [proc ((vector integer) -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc [15 13]))))))))
 
 (deftest set-function
@@ -652,7 +573,7 @@
     (is
      (quickcheck
       (property [proc ((set integer) -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc #{15 13}))))))))
 
 (deftest map-function
@@ -660,7 +581,7 @@
     (is
      (quickcheck
       (property [proc ((map keyword integer) -> integer)]
-                (and (function-memorize? proc)
+                (and (generator/function-memorize? proc)
                      (integer? (proc {:b 0 :a 42}))))))))
 
 (deftest function-function
@@ -668,7 +589,7 @@
     (is
       (quickcheck
        (property [proc ((char -> boolean) -> integer)]
-                 (and (function-memorize? proc)
+                 (and (generator/function-memorize? proc)
                       (integer? (proc #(= % \A)))))))))
 
 (deftest ==>q
@@ -848,7 +769,7 @@
   (is
    (quickcheck
     (property [proc (integer -> integer)]
-              (and (function-memorize? proc)
+              (and (generator/function-memorize? proc)
                    (integer? (proc 0))
                    (integer? (proc 999999999)))))))
 
@@ -856,14 +777,14 @@
   (is
    (quickcheck
     (property [proc ((integer -> integer) -> integer)]
-              (and (function-memorize? proc)
+              (and (generator/function-memorize? proc)
                    (integer? (proc inc))))))
 
   (is
    (quickcheck
     (property [proc (integer -> (integer -> integer))]
-              (and (function-memorize? proc)
-                   (function-memorize? (proc 999999999))
+              (and (generator/function-memorize? proc)
+                   (generator/function-memorize? (proc 999999999))
                    (integer? ((proc 999999999) 999999999)))))))
 
 

@@ -1,23 +1,14 @@
 (ns active.quickcheck2.generator-applicative-test
   (:require [clojure.test :refer :all]
             [active.quickcheck2.random :as random]
-            [active.quickcheck2 :as qc]
             [active.clojure.monad :as monad]
+            [active.quickcheck2.generator :as generator]
             [active.quickcheck2.tree :as tree])
   (:use active.quickcheck2.generator-applicative))
 
 (def test-gen (random/make-random-generator 12))
 
-(defn generate [m] (qc/generate 5 test-gen m 20))
-
-(defn is-counterexample
-  [mresult]
-  (not (qc/check-result-ok (generate mresult))))
-
-(defn get-counterexample
-  [mresult]
-  (map second (qc/check-result-arguments-list (generate mresult))))
-
+(defn generate [m] (generator/generate 5 test-gen m 20))
 
 (deftest generator-map-works
   (testing "generator-map works"
