@@ -11,7 +11,6 @@
 (ns ^{:author "Michael Sperber,  Markus Schlegel, Florian Engel, working from John Hughes's original Haskell version"
       :doc "A QuickCheck clone for Clojure."}
   active.quickcheck2
-  (:use active.quickcheck2.random)
   (:require #?(:clj [active.data.record :refer [def-record is-a?]]
                :cljs [active.data.record :refer [is-a?] :refer-macros [def-record]]))
   (:require [active.clojure.monad :as monad])
@@ -22,455 +21,12 @@
                                                               integrated
                                                               combine-generators
                                                               combine-generators-curry]])
+  (:require [active.quickcheck2.generator :as generator])
+  (:require [active.quickcheck2.random
+             :refer [make-random-generator random-generator-split]])
   (:require [active.quickcheck2.shrink :as shrink])
   (:require [clojure.math.numeric-tower :refer [expt]])
   (:use [clojure.test :only [assert-expr do-report]]))
-
-(def lift->generator combine-generators)
-
-(def-record ^{:doc "Get the random generator."}
-  Get-random-generator-type [])
-(def get-random-generator (Get-random-generator-type))
-(defn get-random-generator? [x] (is-a? Get-random-generator-type x))
-
-(def-record ^{:doc "Get the size of the random generator."}
-  Get-size-type [])
-(def get-size (Get-size-type))
-(defn get-size? [x] (is-a? Get-size-type x))
-
-(defn sequ-with-tree
-  "Evaluate each action in the sequence from left to right, and collect the results."
-  [ms]
-  (let [f (fn f [ms res]
-            (if (seq ms)
-              (monad/free-bind (with-tree (first ms))
-                         (fn [v]
-                           (f (rest ms)
-                              (cons v res))))
-              (monad/free-return (reverse res))))]
-    (f ms '())))
-
-;; Basic generator combinators
-;; ---------------------------
-
-; TODO change all (tree/make-Tree n []) with proper shrink trees
-; [lower, upper]
-(defn choose-integer
-  "Generator for integers within a range, bounds are inclusive."
-  [lower upper]
-  (monad/monadic
-    [rgen get-random-generator]
-    (let [[n _] (random-integer rgen lower upper)
-          ;shrinkTowards the nearest number to zero within the range
-          towards-num (cond
-                        (neg? upper) upper
-                        (neg? lower) 0
-                        :else lower)])
-    (monad/return (tree/unfold (partial shrink/shrink-towards towards-num) n))))
-
-(def choose-byte
-  "Generator for bytes in [-128, 127]."
-  (combine-generators
-   byte
-   (choose-integer Byte/MIN_VALUE Byte/MAX_VALUE)))
-  
-(def choose-unsigned-byte
-  "Generator for bytes in [0, 255]."
-  (combine-generators
-   short
-   (choose-integer 0 (- (expt 2 Byte/SIZE) 1))))
-  
-(def choose-short
-  "Generator for shorts in [-32768, 32767]."
-  (combine-generators
-   short
-   (choose-integer Short/MIN_VALUE Short/MAX_VALUE)))
-
-(def choose-unsigned-short
-  "Generator for bytes in [0, 65535]."
-  (combine-generators
-   int
-   (choose-integer 0 (- (expt 2 Short/SIZE) 1))))
-
-(def choose-int
-  "Generator for ints in [-2147483648, 2147483647]."
-  (combine-generators
-   int
-   (choose-integer Integer/MIN_VALUE Integer/MAX_VALUE)))
-
-(def choose-unsigned-int
-  "Generator for bytes in [0, 4294967295]."
-  (combine-generators
-   long
-   (choose-integer 0 (- (expt 2 Integer/SIZE) 1))))
-
-(def choose-long
-  "Generator for longs in [-9223372036854775808, 9223372036854775807]."
-  (combine-generators
-   long
-   (choose-integer Long/MIN_VALUE Long/MAX_VALUE)))
-
-(def choose-unsigned-long
-  "Generator for bytes in [0, 18446744073709551615]."
-  (combine-generators
-   bigint
-   (choose-integer 0 (- (expt 2 Long/SIZE) 1))))
-
-(defn choose-float
-  "Generator for floats within a range, bounds are inclusive."
-  [lower upper]
-  (monad/monadic
-    [rgen get-random-generator]
-    (let [[n _] (random-float rgen lower upper)])
-    (monad/return (tree/tree tree/tree-outcome n tree/tree-shrinks []))))
-
-(def choose-ascii-char
-  "Generator for ASCII characters."
-  (combine-generators char (choose-integer 0 127)))
-
-(def choose-ascii-letter
-  "Generator for ASCII alphabetic letters."
-  (combine-generators #(get "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz" %)
-                      (choose-integer 0 51)))
-
-(def choose-printable-ascii-char
-  "Generator for printable ASCII characters."
-  (combine-generators char (choose-integer 32 127)))
-
-(defn- choose-char-with-property
-  [pred]
-  (monad/monadic
-    [rgen get-random-generator]
-;   ;; loop until proper char is found; otherwise we could build a
-;   ;; map of all chars, but that's not that good either.
-    (loop [rg rgen]
-          (let [[i ngen] (random-integer rg 0 0xffff)
-                c (char i)]
-            (if (pred c)
-             (monad/return (tree/tree tree/tree-outcome c tree/tree-shrinks []))
-             (recur ngen))))))
-
-(def choose-non-numeric-char
-  (letfn [(is-non-numeric? [c]
-            (let [t (java.lang.Character/getType (int c))]
-              (or (= t java.lang.Character/UPPERCASE_LETTER)
-                  (= t java.lang.Character/LOWERCASE_LETTER))))]
-    (choose-char-with-property is-non-numeric?)))
-
-(def choose-alphanumeric-char
-  (letfn [(is-alphanumeric? [c]
-            (let [t (java.lang.Character/getType (int c))]
-              (or (= t java.lang.Character/UPPERCASE_LETTER)
-                  (= t java.lang.Character/LOWERCASE_LETTER)
-                  (= t java.lang.Character/DECIMAL_DIGIT_NUMBER)
-                  (= t java.lang.Character/LETTER_NUMBER)
-                  (= t java.lang.Character/OTHER_NUMBER)))
-            )]
-    (choose-char-with-property is-alphanumeric?)))
-
-(defn choose-char
-  "Generator for chars within a range, bonds are inclusive."
-  [lower upper]
-  (combine-generators char (choose-integer (int lower) (int upper))))
-
-; int (generator a) -> (generator a)
-(def-record ^{:doc "Make generator that transforms random number seed depending on v."}
-  Variant-type
-  [variant-v
-    variant-generator])
-(defn variant [v generator] (Variant-type variant-v v variant-generator generator))
-(defn variant? [x] (is-a? Variant-type x))
-
-; (vals -> (generator b)) -> (generator (vals -> b))
-(def-record ^{:doc "Promote a function to generators to a generator of functions."}
-  Promote-type
-  [promote-func])
-(defn promote [func] (Promote-type promote-func func))
-(defn promote? [x] (is-a? Promote-type x))
-
-(defrecord MyFn [f graph]
-  clojure.lang.IFn
-  (invoke [this]
-    (let [ret (f)]
-      (swap! graph assoc [] ret)
-      ret))
-  (invoke [this arg]
-    (let [ret (f arg)]
-      (swap! graph assoc [arg] ret)
-      ret))
-  (invoke [this arg1 arg2]
-    (let [ret (f arg1 arg2)]
-      (swap! graph assoc [arg1 arg2] ret)
-      ret))
-  (invoke [this arg1 arg2 arg3]
-    (let [ret (f arg1 arg2 arg3)]
-      (swap! graph assoc [arg1 arg2 arg3] ret)
-      ret))
-  (invoke [this arg1 arg2 arg3 arg4]
-    (let [ret (f arg1 arg2 arg3 arg4)]
-      (swap! graph assoc [arg1 arg2 arg3 arg4] ret)
-      ret))
-  (invoke [this arg1 arg2 arg3 arg4 arg5]
-    (let [ret (f arg1 arg2 arg3 arg4 arg5)]
-      (swap! graph assoc [arg1 arg2 arg3 arg4 arg5] ret)
-      ret))
-  (applyTo [this args]
-    (let [ret (apply f args)]
-      (swap! graph assoc args ret)
-      ret))
-  (invoke [this arg1 arg2 arg3 arg4 arg5 & args]
-    (let [ret (apply f arg1 arg2 arg3 arg4 arg5 & args)]
-      (swap! graph assoc (apply conj [] arg1 arg2 arg3 arg4 arg5 args) ret)
-      ret))
-  Object
-  (toString [this] (str "Function: " (deref (:graph this)))))
-
-(defn current-graph [myfn]
-  (deref (:graph myfn)))
-
-(defn function-memorize? [arg] (instance? MyFn arg))
-
-(defmacro fm
-  [[ & args] [ & body]]
-  (let [f# `(fn ~(vec args) ~body)
-        graph# `(atom {})]
-    `(->MyFn ~f# ~graph# )))
-
-(def-record ^{:doc "Make a generator with a specified size."}
-  With-size-type
-  [with-size-size
-   with-size-generator])
-(defn resize [size generator] (With-size-type with-size-size size with-size-generator generator))
-(defn with-size? [x] (is-a? With-size-type x))
-; int random-gen (generator a) -> a
-
-(def-record ^{:doc "If the generator contains a tree, use it"}
-  Maybe-with-tree-type
-  [maybe-get-tree])
-(defn maybe-with-tree [get-tree] (maybe-with-tree maybe-get-tree get-tree))
-(defn maybe-with-tree? [x] (is-a? Maybe-with-tree-type x))
-
-(def-record ^{:doc "Get the maximal depth for the shrinking function"}
-  Get-max-shrink-depth-type [])
-(defn get-max-shrink-depth [] (Get-max-shrink-depth-type))
-(defn get-max-shrink-depth? [x] (is-a? Get-max-shrink-depth-type x))
-
-(defn coerce->tree [arg] (if (tree/tree? arg) (tree/tree-outcome arg) arg))
-
-(defn value->tree [arg] (if (tree/tree? arg) arg (tree/pure arg)))
-
-(defn generate ; aka run
-  "Extract a value from a generator, using size n and random generator rgen."
-  [n rgen gen max-shrink-depth]
-  (let [[size nrgen] (random-integer rgen 0 n)]
-    (letfn [(run [m size rgen]
-      (cond
-        (monad/free-return? m) (monad/free-return-val m)
-                
-        (monad/free-bind? m)
-        (let [m1 (monad/free-bind-monad m)
-              cont (monad/free-bind-cont m)
-              [rgen1 rgen2] (random-generator-split rgen)]
-          (cond
-            (with-tree? m1) (recur (cont (value->tree (run (get-tree m1) size rgen1))) size rgen2)
-
-            (maybe-with-tree? m1) (recur (cont (run (maybe-get-tree m1) size rgen1)) size rgen2)
-
-            (monad/free-return? m1) (recur (cont (coerce->tree (monad/free-return-val m1))) size rgen)
-            
-            (monad/free-bind? m1) (ex-info "nested bind; should not happen" {:fn `run :expression m :bind-first m1})
-            
-            (get-random-generator? m1) (recur (cont rgen2) size rgen1)
-            
-            (get-size? m1) (recur (cont size) size rgen)
-
-            (get-max-shrink-depth? m1) (recur (cont max-shrink-depth) size rgen)
-           
-            (with-size? m1)
-            (let [size1 (with-size-size m1)
-                  gen1 (with-size-generator m1)]
-              (recur (cont (run gen1 size1 rgen1)) size rgen2))
-            
-            (variant? m1)
-            (let [v (variant-v m1)
-                  next-rgen (integer-variant v rgen)]
-              (run (cont (run (variant-generator m1) size next-rgen)) size next-rgen))
-            
-            (promote? m1)
-            (recur
-              (cont
-                (let [func (promote-func m1)]
-                  (tree/lazy-tree
-                  (fm [& vals]
-                    (let [b (run (apply func vals) size rgen1)]
-                       (tree/tree-outcome b))) [])))
-              size rgen2)
-            :else (assert false
-                          (str "invalid generator: " (pr-str m1)))))
-                
-        (get-random-generator? m) rgen
-                
-        (get-size? m) size
-        
-        (get-max-shrink-depth? m) max-shrink-depth
-
-        (with-size? m)
-        (let [size (with-size-size m)
-              gen (with-size-generator m)]
-          (recur gen size rgen))
-                
-        (variant? m)
-        (let [v (variant-v m)
-              next-rgen (integer-variant v rgen)]
-          (run (variant-generator m) size next-rgen))
-                
-        (promote? m)
-        (let [func (promote-func m)]
-          (tree/lazy-tree
-          (fm [& vals]
-             (let [b (run (apply func vals) size rgen)]
-               (tree/tree-outcome b)))
-          []))
-        
-      :else (assert false
-                    (str "invalid gen: " (pr-str m)))))]
-      (run gen size nrgen))))
-
-; (int -> (generator a)) -> (generator a)
-(defn sized
-  "Apply a size to a generator."
-  [func]
-  (monad/monadic
-    [size get-size]
-    (func size)))
-
-; (list a) -> (generator a)
-; TODO does it make sense to shrink this like an integer?
-(defn choose-one-of
-  "Make a generator that yields one of a list of values."
-  [lis]
-  (combine-generators #(nth lis %)
-    (choose-integer 0 (- (count lis) 1))))
-
-; (list (gen a)) -> (gen a)
-; TODO doesn't work with trees. Remove it?
-(defn oneof
-  "Haskell QuickCheck's oneof"
-  [gs]
-  (when (< (count gs) 1)
-    (assert false "oneof used with empty list"))
-  (monad/free-bind (choose-integer 0 (- (count gs) 1))
-                   #(nth gs 1)))
-
-(defn- choose-sequence-like-in-range
-  [el-gen lower upper]
-  (monad/monadic
-   [length (choose-integer lower upper)]
-   [list-of-trees (sequ-with-tree (repeat length el-gen))]
-   (monad/return (first (tree/filter-tree (fn [sequence] (<= lower (count sequence)))
-                                          (shrink/sequence-shrink-list list-of-trees))))))
-
-; vector from the paper
-; (generator a) int -> (generator (list a))
-(defn choose-list
-  "Generator for a list of values with size n."
-  [el-gen n]
-  (apply combine-generators list (repeat n el-gen)))
-
-(defn choose-list-in-range
-  [el-gen lower upper]
-  (combine-generators #(into () %) (choose-sequence-like-in-range lower upper)))
-
-; (generator char) int -> (generator string)
-(defn choose-string
-  "Generator for a string with size n."
-  [char-gen n]
-  (combine-generators #(apply str %) (choose-list char-gen n)))
-
-(defn choose-string-in-range
-  [el-gen lower upper]
-  (combine-generators #(apply str %) (choose-sequence-like-in-range lower upper)))
-
-(declare choose-mixed)
-; TODO make it work with trees
-(defn choose-symbol
-  "Generator for a symbol with size n+1."
-  [n]
-  (let
-    [fst (choose-string choose-non-numeric-char 1)
-     rst (choose-string (choose-mixed (list choose-alphanumeric-char
-                                        (choose-one-of (seq "*+!-_?"))))
-           n)]
-    (combine-generators-curry (fn [f] (fn [r] (symbol (str f r)))) fst rst)))
-
-(defn choose-keyword
-  "Generator for a keyword with size n+1."
-  [n]
-  (combine-generators keyword (choose-symbol n)))
-
-(defn choose-vector
-  "Generator for a vector with size n."
-  [el-gen n]
-  (combine-generators vec (choose-list el-gen n)))
-
-(defn choose-vector-in-range
-  [el-gen lower upper]
-  (combine-generators vec (choose-sequence-like-in-range el-gen lower upper)))
-
-(defn choose-byte-array
-  "Generator for a byte array with size n."
-  [n]
-  (combine-generators byte-array (choose-list choose-byte n)))
-
-(defn choose-byte-array-in-range
-  [el-gen lower upper]
-  (combine-generators byte-array (choose-sequence-like-in-range el-gen lower upper)))
-
-(defn- map-of-tuples
-  [tups]
-  (reduce (fn [m [k v]] (assoc m k v)) {} tups))
-
-; TODO map-of-tuples doesn't preserve length. Maybe change this
-#_(map-of-tuples [['a 1] ['a 2]])
-
-(defn choose-map
-  "Generator for a map with size n. The passed element generator must
-  generate key-value pairs."
-  [el-gen n]
-  (combine-generators map-of-tuples (choose-list el-gen n)))
-
-(defn choose-set
-  "Generator for a set with size <= n"
-  [el-gen n]
-  (combine-generators set (choose-list el-gen n)))
-
-; (list (promise (generator a))) -> (generator a)
-(defn choose-mixed
-  "Generator that chooses from a sequence of generators.
-  This has no shrinking between the gens"
-  [gens]
-  (monad/monadic
-   [n (choose-integer 0 (- (count gens) 1))]
-   (force (nth gens n))))
-  ;(monad/free-bind (choose-one-of gens) force)) ; ???
-
-; (list (list int (generator a))) -> (generator a)
-(declare pick)
-(defn choose-with-frequencies
-  "Generator that chooses from a sequence of (frequency generator) pairs."
-  [lis]
-  (monad/monadic
-    [n (choose-integer 1 (apply + (map first lis)))]
-    (monad/return (pick n lis))))
-
-(defn pick
-  "Pick an element from a sequence of (frequency, generator) pairs."
-  [n lis]
-  (let [f (first lis)
-        k (first f)]
-    (if (<= n k)
-      (second f)
-      (recur (- n k) (rest lis)))))
 
 (def-record ^{:doc "Generalization of generator, suitable for producing function generators."}
   Arbitrary-type
@@ -488,58 +44,20 @@
   [coarb]
   (Coarbitrary-type coarbitrary-coarbitrary coarb))
 
-(def-record ^{:doc "QuickCheck property"}
-  Property-type
-  [property-func
-   property-arg-names
-   ;; (seq (union arbitrary generator))
-   property-args])
-
-(defn make-property
-  [func arg-names args]
-  (Property-type property-func func
-                 property-arg-names arg-names
-                 property-args args))
-
-
-;; Advanced generator combinators
-;; ------------------------------
-
-(defn such-that-maybe
-  [gen pred]
-  (letfn [(mytry [k n]
-               (if (= 0 n)
-                 (monad/monadic (monad/return nil))
-                 (monad/monadic [x (with-tree (resize (+ (* 2 k) n) gen))]
-                          (if (pred (tree/tree-outcome x))
-                            (monad/return (first (tree/filter-tree pred x)))
-                            (mytry (+ k 1) (- n 1))))))]
-    (sized (fn [n] (mytry 0 (max 1 n))))))
-
-
-(defn such-that-generator
-  [gen pred]
-  (monad/monadic
-   [x (maybe-with-tree (such-that-maybe gen pred))]
-   (if x
-     (monad/return x)
-     (sized (fn [n] (resize (+ n 1) (such-that-generator gen pred)))))))
-
 (defn such-that
-  "Takes a generator and a predicate and
+  "Takes a arbitary and a predicate and
   returns a new generator that satisfies
   the predicate."
   [arb pred]
   (let [gen (arbitrary-generator arb)
-        newgen (such-that-generator gen pred)]
+        newgen (generator/such-that-generator gen pred)]
     (make-arbitrary newgen))) ;; TODO: write coarbitrary implementation
 
 (defn generate-one-of
   "Randomly choose one of a list of given arbitraries"
   [arbs]
-  (monad/free-bind (with-tree (choose-one-of arbs))
+  (monad/free-bind (with-tree (generator/choose-one-of arbs))
                    arbitrary-generator))
-
 
 ;; Arbitraries
 ;; -----------
@@ -547,57 +65,57 @@
 (def arbitrary-boolean
   "Arbitrary boolean."
   (make-arbitrary
-    (choose-one-of '(true false))))
+    (generator/choose-one-of '(true false))))
 
 (def coarbitrary-boolean
   "Coarbitrary boolean"
   (make-coarbitrary
    (fn [a gen]
-     (variant (if a 0 1) gen))))
+     (generator/variant (if a 0 1) gen))))
 
 (def arbitrary-integer
   "Arbitrary integer."
   (make-arbitrary
-   (sized
+   (generator/sized
     (fn [n]
       (let [hi (expt 4 n)
             lo (- hi)]
-        (choose-integer lo hi))))))
+        (generator/choose-integer lo hi))))))
 
 (def coarbitrary-integer
   "Arbitrary integer."
   (make-coarbitrary
     (fn [n gen]
-      (variant (if (>= n 0)
-                 (* 2 n)
-                 (+ (* 2 (- n)) 1))
+      (generator/variant (if (>= n 0)
+                           (* 2 n)
+                           (+ (* 2 (- n)) 1))
         gen))))
 
 (def arbitrary-natural
   "Arbitrary natural number."
   (make-arbitrary
-   (sized
+   (generator/sized
     (fn [n]
-      (choose-integer 0 n)))))
+      (generator/choose-integer 0 n)))))
 
 (def coarbitrary-natural
   "Coarbitrary natural number"
   (fn [n gen]
-      (variant n gen)))
+    (generator/variant n gen)))
 
 (defn arbitrary-integer-from-to
   "Arbitrary integer from range."
   [from to]
   (make-arbitrary
-   (sized
+   (generator/sized
     (fn [n]
-      (choose-integer from to)))))
+      (generator/choose-integer from to)))))
 
 (defn coarbitrary-integer-from-to
   "Coarbitrary integer from range."
   [from to]
   (fn [n gen]
-      (variant (- n from) gen)))
+      (generator/variant (- n from) gen)))
 
 ; TODO can we remove this
 (defn- arbitrary-int-like
@@ -608,108 +126,108 @@
 (defn- coarbitrary-int-like
   [gen to-int]
   (make-coarbitrary (fn [v rgen]
-                      (variant (to-int v) rgen))))
+                      (generator/variant (to-int v) rgen))))
 
 (def arbitrary-byte
   "Arbitrary byte."
-  (arbitrary-int-like choose-byte byte))
+  (arbitrary-int-like generator/choose-byte byte))
 
 (def coarbitrary-byte
   "Coarbitrary byte."
-  (coarbitrary-int-like choose-byte byte))
+  (coarbitrary-int-like generator/choose-byte byte))
 
 (def arbitrary-short
   "Arbitrary short."
-  (arbitrary-int-like choose-short short))
+  (arbitrary-int-like generator/choose-short short))
 
 (def coarbitrary-short
   "Coarbitrary short."
-  (coarbitrary-int-like choose-short short))
+  (coarbitrary-int-like generator/choose-short short))
 
 (def arbitrary-int
   "Arbitrary int."
-  (arbitrary-int-like choose-int int))
+  (arbitrary-int-like generator/choose-int int))
 
 (def coarbitrary-int
   "Coarbitrary int."
-  (coarbitrary-int-like choose-int int))
+  (coarbitrary-int-like generator/choose-int int))
 
 (def arbitrary-long
   "Arbitrary long."
-  (arbitrary-int-like choose-long long))
+  (arbitrary-int-like generator/choose-long long))
 
 (def coarbitrary-long
   "Coarbitrary long."
-  (coarbitrary-int-like choose-long long))
+  (coarbitrary-int-like generator/choose-long long))
 
 (def arbitrary-unsigned-byte
   "Arbitrary unsigned byte."
-  (arbitrary-int-like choose-unsigned-byte short))
+  (arbitrary-int-like generator/choose-unsigned-byte short))
 
 (def coarbitrary-unsigned-byte
   "Coarbitrary unsigned byte."
-  (coarbitrary-int-like choose-unsigned-byte short))
+  (coarbitrary-int-like generator/choose-unsigned-byte short))
 
 (def arbitrary-unsigned-short
   "Arbitrary unsigned short."
-  (arbitrary-int-like choose-unsigned-short int))
+  (arbitrary-int-like generator/choose-unsigned-short int))
 
 (def coarbitrary-unsigned-short
   "Coarbitrary unsigned short."
-  (coarbitrary-int-like choose-unsigned-short int))
+  (coarbitrary-int-like generator/choose-unsigned-short int))
 
 (def arbitrary-unsigned-int
   "Arbitrary unsigned int."
-  (arbitrary-int-like choose-unsigned-int long))
+  (arbitrary-int-like generator/choose-unsigned-int long))
 
 (def coarbitrary-unsigned-int
   "Coarbitrary unsigned int."
-  (coarbitrary-int-like choose-unsigned-int long))
+  (coarbitrary-int-like generator/choose-unsigned-int long))
 
 (def arbitrary-unsigned-long
   "Arbitrary unsigned long."
-  (arbitrary-int-like choose-unsigned-long bigint))
+  (arbitrary-int-like generator/choose-unsigned-long bigint))
 
 (def coarbitrary-unsigned-long
   "Coarbitrary unsigned long."
-  (coarbitrary-int-like choose-unsigned-long bigint))
+  (coarbitrary-int-like generator/choose-unsigned-long bigint))
 
 (def arbitrary-ascii-char
   "Arbitrary ASCII character."
-  (arbitrary-int-like choose-ascii-char int))
+  (arbitrary-int-like generator/choose-ascii-char int))
 
 (def coarbitrary-ascii-char
   "Coarbitrary ASCII character."
-  (coarbitrary-int-like choose-ascii-char int))
+  (coarbitrary-int-like generator/choose-ascii-char int))
 
 (def arbitrary-ascii-letter
   "Arbitrary ASCII letter."
-  (arbitrary-int-like choose-ascii-letter int))
+  (arbitrary-int-like generator/choose-ascii-letter int))
 
 (def coarbitrary-ascii-letter
   "Coarbitrary ASCII letter."
-  (coarbitrary-int-like choose-ascii-letter int))
+  (coarbitrary-int-like generator/choose-ascii-letter int))
 
 (def arbitrary-printable-ascii-char
   "Arbitrary printable ASCII character."
-  (arbitrary-int-like choose-printable-ascii-char int))
+  (arbitrary-int-like generator/choose-printable-ascii-char int))
 
 (def coarbitrary-printable-ascii-char
   "Coarbitrary printable ASCII character."
-  (coarbitrary-int-like choose-printable-ascii-char int))
+  (coarbitrary-int-like generator/choose-printable-ascii-char int))
 
 (def arbitrary-char
   "Arbitrary char."
-  (arbitrary-int-like (sized
+  (arbitrary-int-like (generator/sized
                        (fn [n]
-                         (choose-char \u0000 (char (min n 0xffff)))))
+                         (generator/choose-char \u0000 (char (min n 0xffff)))))
                       int))
 
 (def coarbitrary-char
   "Coarbitrary char."
-  (coarbitrary-int-like (sized
+  (coarbitrary-int-like (generator/sized
                          (fn [n]
-                           (choose-char \u0000 (char (min n 0xffff)))))
+                           (generator/choose-char \u0000 (char (min n 0xffff)))))
                         int))
 
 (defn- make-rational
@@ -763,8 +281,8 @@
   "Arbitrary value from one of a list of (promises of) arbitraries."
   [pred+arbitrary-promise-list]
   (make-arbitrary
-   (choose-mixed (map #(delay (coerce->generator (force (second %))))
-                      pred+arbitrary-promise-list))))
+   (generator/choose-mixed (map #(delay (coerce->generator (force (second %))))
+                                pred+arbitrary-promise-list))))
 
 (defn coarbitrary-mixed
   "Arbitrary value from one of a list of (promises of) arbitraries."
@@ -775,14 +293,14 @@
              n 0]
         (cond
           (not (seq lis)) (throw (Error. "arbitrary-mixed: value matches none of the predicates"))
-          ((first (first lis)) val) (variant n gen)
+          ((first (first lis)) val) (generator/variant n gen)
           :else (recur (rest lis) (+ 1 n)))))))
 
 (defn arbitrary-one-of
   "Arbitrary value from a list of values, and equality predicate."
   [eql? & vals]
   (make-arbitrary
-   (choose-one-of vals)))
+   (generator/choose-one-of vals)))
 
 (defn coarbitrary-one-of
   "Coarbitrary value from a list of values, and equality predicate."
@@ -793,7 +311,7 @@
              n 0]
         (cond
           (not (seq lis)) (throw (Error. "arbitrary-one-of: value matches none of the predicates"))
-          (eql? (first lis) val) (variant n gen)
+          (eql? (first lis) val) (generator/variant n gen)
           :else (recur (rest lis) (+ 1 n)))))))
 
 (defn arbitrary-tuple
@@ -853,15 +371,15 @@
         {max-count :max-count} opts
         generator-el (arbitrary-generator arbitrary-el)]
     (make-arbitrary
-     (sized
+     (generator/sized
       (fn [n]
         (combine-generators
          list->sequence
         (if count
-          (choose-list generator-el count)
-          (choose-sequence-like-in-range generator-el
-                                         min-count
-                                         (if max-count max-count n)))))))))
+          (generator/choose-list generator-el count)
+          (generator/choose-sequence-like-in-range generator-el
+                                                   min-count
+                                                   (if max-count max-count n)))))))))
 
 (defn coarbitrary-coll-of
   "Coarbitrary collection mimicking Clojure spec's coll-of"
@@ -872,20 +390,20 @@
   "Arbitrary sequence-like container."
   [list->sequence arbitrary-el]
   (make-arbitrary
-    (sized
+    (generator/sized
       (fn [n]
         (combine-generators list->sequence
-                            (choose-sequence-like-in-range (coerce->generator arbitrary-el) 0 n))))))
+                            (generator/choose-sequence-like-in-range (coerce->generator arbitrary-el) 0 n))))))
 
 (defn arbitrary-sequence-like-in-range
   "Arbitrary sequence-like container."
   [list->sequence arbitrary-el lower upper]
   (make-arbitrary
-   (sized
+   (generator/sized
     (fn [n]
-      (choose-sequence-like-in-range (coerce->generator arbitrary-el)
-                                     lower
-                                     (min (+ lower n) upper))))))
+      (generator/choose-sequence-like-in-range (coerce->generator arbitrary-el)
+                                               lower
+                                               (min (+ lower n) upper))))))
 
 (defn coarbitrary-sequence-like
   "Coarbitrary sequence-like container."
@@ -896,8 +414,8 @@
                 (if (seq lis)
                   ((coarbitrary-coarbitrary coarbitrary-el)
                     (first lis)
-                    (variant 1 (recurse (rest lis))))
-                  (variant 0 gen)))]
+                    (generator/variant 1 (recurse (rest lis))))
+                  (generator/variant 0 gen)))]
         (recurse (sequence->list sequ))))))
 
 (defn arbitrary-list
@@ -913,7 +431,7 @@
 (defn coarbitrary-list
   "Coarbitrary list."
   [coarbitrary-el]
-  (coarbitrary-sequence-like choose-list identity coarbitrary-el))
+  (coarbitrary-sequence-like generator/choose-list identity coarbitrary-el))
 
 (defn arbitrary-vector
   "Arbitrary vector."
@@ -928,7 +446,7 @@
 (defn coarbitrary-vector
   "Coarbitrary vector."
   [coarbitrary-el]
-  (coarbitrary-sequence-like choose-vector #(into () %) coarbitrary-el))
+  (coarbitrary-sequence-like generator/choose-vector #(into () %) coarbitrary-el))
 
 (def arbitrary-byte-array
   "Arbitrary byte-array."
@@ -941,17 +459,17 @@
 
 (def coarbitrary-byte-array
   "coarbitrary byte-array."
-  (coarbitrary-sequence-like (fn [_ n] (choose-byte-array n)) #(into () %) coarbitrary-byte))
+  (coarbitrary-sequence-like (fn [_ n] (generator/choose-byte-array n)) #(into () %) coarbitrary-byte))
 
 (defn arbitrary-map
   "Arbitrary map over the given arbitrary key and value."
   [arbitrary-key arbitrary-value]
-  (arbitrary-sequence-like map-of-tuples (arbitrary-tuple arbitrary-key arbitrary-value)))
+  (arbitrary-sequence-like generator/map-of-tuples (arbitrary-tuple arbitrary-key arbitrary-value)))
 
 (defn coarbitrary-map
   "coarbitrary map over the given arbitrary key and value."
   [coarbitrary-key coarbitrary-value]
-  (coarbitrary-sequence-like choose-map #(into () %) (coarbitrary-tuple coarbitrary-key coarbitrary-value)))
+  (coarbitrary-sequence-like generator/choose-map #(into () %) (coarbitrary-tuple coarbitrary-key coarbitrary-value)))
 
 (defn arbitrary-set
   "Arbitrary set."
@@ -961,7 +479,7 @@
 (defn coarbitrary-set
   "Coarbitrary set."
   [coarbitrary-el]
-  (coarbitrary-sequence-like choose-set #(into () %) coarbitrary-el))
+  (coarbitrary-sequence-like generator/choose-set #(into () %) coarbitrary-el))
 
 (def arbitrary-ascii-string
   "Arbitrary string of ASCII characters."
@@ -1001,7 +519,7 @@
 (defn- arbitrary-symbol-like
   [choose]
   (make-arbitrary
-   (sized (fn [n] (choose n)))))
+   (generator/sized (fn [n] (choose n)))))
 
 (defn- coarbitrary-symbol-like
   [choose]
@@ -1011,26 +529,26 @@
 
 (def arbitrary-symbol
   "Arbitrary symbol."
-  (arbitrary-symbol-like choose-symbol))
+  (arbitrary-symbol-like generator/choose-symbol))
 
 (def coarbitrary-symbol
   "Coarbitrary symbol."
-  (coarbitrary-symbol-like choose-symbol))
+  (coarbitrary-symbol-like generator/choose-symbol))
 
 (def arbitrary-keyword
   "Arbitrary keyword."
-  (arbitrary-symbol-like choose-keyword))
+  (arbitrary-symbol-like generator/choose-keyword))
 
 (def coarbitrary-keyword
   "Coarbitrary keyword."
-  (coarbitrary-symbol-like choose-keyword))
+  (coarbitrary-symbol-like generator/choose-keyword))
 
 (defn arbitrary-function
   "Arbitrary function."
   [arbitrary-result & coarbitrary-args]
   (let [coarbitrary-arg-tuple (apply coarbitrary-tuple coarbitrary-args)]
     (make-arbitrary
-     (promote
+     (generator/promote
       (fn [& args]
         ((coarbitrary-coarbitrary coarbitrary-arg-tuple)
          args
@@ -1420,6 +938,19 @@ The syntax is extensible via the expand-arbitrary multimethod."
   [form]
   (expand-arbitrary form))
 
+(def-record ^{:doc "QuickCheck property"}
+  Property-type
+  [property-func
+   property-arg-names
+   ;; (seq (union arbitrary generator))
+   property-args])
+
+(defn make-property
+  [func arg-names args]
+  (Property-type property-func func
+                 property-arg-names arg-names
+                 property-args args))
+
 (defmacro property
   "Create a property through binding identifiers to arbitraries.
 
@@ -1585,7 +1116,7 @@ saying whether the property is satisfied."
   (let [arg-trees (map coerce->generator arg-trees)]
     (monad/monadic
       [args-tree (with-tree (apply combine-generators vector arg-trees))
-       max-shrink-depth (get-max-shrink-depth)
+       max-shrink-depth (generator/get-max-shrink-depth)
        res (coerce->result-generator
             (try (apply func (tree/tree-outcome args-tree))
                  (catch Exception e (make-check-result false
@@ -1763,7 +1294,7 @@ returns three values:
       :else
       (let [[rgen1 rgen2] (random-generator-split rgen)
             size ((make-config-size config) ntest)
-            result (generate size rgen2 gen (make-config-max-shrink-depth config))]
+            result (generator/generate size rgen2 gen (make-config-max-shrink-depth config))]
         ((make-config-print-every config) ntest (check-result-arguments-list result))
         (case (check-result-ok result)
           nil (recur rgen1 ntest (+ 1 nfail) stamps)
