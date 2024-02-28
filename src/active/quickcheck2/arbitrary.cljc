@@ -16,13 +16,6 @@
   [generator]
   (Arbitrary-type arbitrary-generator generator))
 
-(defn coerce->generator
-  "Coerce an object to a generator."
-  [thing]
-  (if (is-a? Arbitrary-type thing)
-    (arbitrary-generator thing)
-    thing))
-
 (def-record ^{:doc "Coarbitrary typeclass in original Haskell implementation"}
   Coarbitrary-type
   [coarbitrary-coarbitrary])
@@ -262,13 +255,11 @@
         ((coarbitrary-coarbitrary coarbitrary-integer)
          (.denominator fr) gen))))))
 
-(declare coerce->generator)
-
 (defn arbitrary-mixed
   "Arbitrary value from one of a list of (promises of) arbitraries."
   [pred+arbitrary-promise-list]
   (make-arbitrary
-   (generator/choose-mixed (map #(delay (coerce->generator (force (second %))))
+   (generator/choose-mixed (map #(delay (arbitrary-generator (force (second %))))
                                 pred+arbitrary-promise-list))))
 
 (defn coarbitrary-mixed
@@ -380,7 +371,7 @@
     (generator/sized
       (fn [n]
         (combine-generators list->sequence
-                            (generator/choose-sequence-like-in-range (coerce->generator arbitrary-el) 0 n))))))
+                            (generator/choose-sequence-like-in-range (arbitrary-generator arbitrary-el) 0 n))))))
 
 (defn arbitrary-sequence-like-in-range
   "Arbitrary sequence-like container."
@@ -388,7 +379,7 @@
   (make-arbitrary
    (generator/sized
     (fn [n]
-      (generator/choose-sequence-like-in-range (coerce->generator arbitrary-el)
+      (generator/choose-sequence-like-in-range (arbitrary-generator arbitrary-el)
                                                lower
                                                (min (+ lower n) upper))))))
 

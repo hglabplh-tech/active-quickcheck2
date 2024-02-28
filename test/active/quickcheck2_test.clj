@@ -6,7 +6,7 @@
             [active.quickcheck2.tree :as tree]
             [active.quickcheck2.random :as random]
             [active.quickcheck2.generator :refer [generate]]
-            [active.quickcheck2.arbitrary :refer [arbitrary-integer arbitrary-natural coerce->generator]]
+            [active.quickcheck2.arbitrary :refer [arbitrary-integer arbitrary-natural]]
             [clojure.math.numeric-tower :refer [expt]])
   (:use active.quickcheck2))
 

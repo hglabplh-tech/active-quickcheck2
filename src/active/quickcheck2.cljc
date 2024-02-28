@@ -118,6 +118,13 @@ saying whether the property is satisfied."
 (def nothing
   (make-check-result nil [] [] #{}))
 
+(defn coerce->generator
+  "Coerce an object to a generator."
+  [thing]
+  (if (is-a? arbitrary/Arbitrary-type thing)
+    (arbitrary/arbitrary-generator thing)
+    thing))
+
 ; A testable value is one of the following:
 ; - a Property object
 ; - a boolean
@@ -198,7 +205,7 @@ saying whether the property is satisfied."
   [func arg-names arg-trees]
   (assert (= (count arg-names) (count arg-trees))
           "Number of arg-names does not match number of arguments")
-  (let [arg-trees (map arbitrary/coerce->generator arg-trees)]
+  (let [arg-trees (map coerce->generator arg-trees)]
     (monad/monadic
       [args-tree (with-tree (apply combine-generators vector arg-trees))
        max-shrink-depth (generator/get-max-shrink-depth)
